@@ -1,0 +1,26 @@
+globalThis.__BUILD_MANIFEST = {
+  "pages": {
+    "/_app": []
+  },
+  "devFiles": [],
+  "polyfillFiles": [
+    "static/chunks/edfa3_next_dist_build_polyfills_polyfill-nomodule.js"
+  ],
+  "lowPriorityFiles": [],
+  "rootMainFiles": [
+    "static/chunks/[turbopack]_browser_dev_hmr-client_hmr-client_ts_f8fc1a83._.js",
+    "static/chunks/edfa3_next_dist_compiled_react-dom_32655050._.js",
+    "static/chunks/edfa3_next_dist_compiled_react-server-dom-turbopack_a95cb36d._.js",
+    "static/chunks/edfa3_next_dist_compiled_next-devtools_index_3a787333.js",
+    "static/chunks/edfa3_next_dist_compiled_cdfc01b9._.js",
+    "static/chunks/edfa3_next_dist_client_bbef2507._.js",
+    "static/chunks/edfa3_next_dist_264b3fd8._.js",
+    "static/chunks/edfa3_@swc_helpers_cjs_87a2c313._.js",
+    "static/chunks/openclaw-mission-control_a0ff3932._.js",
+    "static/chunks/turbopack-openclaw-mission-control_feda3c5b._.js"
+  ]
+};
+globalThis.__BUILD_MANIFEST.lowPriorityFiles = [
+"/static/" + process.env.__NEXT_BUILD_ID + "/_buildManifest.js",
+"/static/" + process.env.__NEXT_BUILD_ID + "/_ssgManifest.js"
+];

@@ -1,0 +1,1 @@
+self.__NEXT_FONT_MANIFEST="{\n  \"app\": {\n    \"[project]/openclaw-mission-control/app/page\": [\n      \"static/media/1b99372b3eaef0c8-s.p.758e15a8.woff2\",\n      \"static/media/051742360c26797e-s.p.102b7f24.woff2\"\n    ]\n  },\n  \"appUsingSizeAdjust\": true,\n  \"pages\": {},\n  \"pagesUsingSizeAdjust\": false\n}"
