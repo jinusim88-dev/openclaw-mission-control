@@ -72,15 +72,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Insert into mission_control table with record_type for filtering
-    const recordType = getRecordType(event.event_type);
-    const recordKey = getRecordKey(event);
-    
+    // Insert into mission_control table
     const { data, error } = await supabase
       .from("mission_control")
       .insert({
-        record_type: recordType,
-        record_key: recordKey,
         data: {
           event_type: event.event_type,
           timestamp: event.timestamp,
@@ -93,6 +88,8 @@ export async function POST(request: NextRequest) {
           message: event.message,
           metadata: event.metadata || {},
           severity: event.severity || "info",
+          record_type: getRecordType(event.event_type),
+          record_key: getRecordKey(event),
         },
       })
       .select()
