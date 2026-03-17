@@ -436,7 +436,7 @@ export interface AgentsResponse {
 
 export async function fetchAgents(): Promise<AgentsResponse> {
   try {
-    // Fetch agent_status records from Supabase
+    // Fetch agent data from Supabase
     const history = await fetchMissionControlHistory(50);
     
     // Create a map to store unique agents by ID
@@ -447,50 +447,51 @@ export async function fetchAgents(): Promise<AgentsResponse> {
       agentMap.set(agent.id, { ...agent });
     }
     
-    // Process agent_status records from Supabase
+    // Process agent data from Supabase
+    // The mission_control table stores data in two formats:
+    // 1. Array format: record.data.agentList?.agents
+    // 2. Individual record format: record_type === "agent_status" && record_key.startsWith("agent:")
     for (const record of history) {
-      if (record.record_type === "agent_status") {
-        // Check if this is an agent list record
-        if (record.data?.agents && Array.isArray(record.data.agents)) {
-          // This is a multi-agent record
-          for (const agentData of record.data.agents) {
-            const agentId = agentData.id || agentData.agent_id || `agent:${agentData.name?.toLowerCase().replace(/\s+/g, '_')}`;
-            
-            const agent: Agent = {
-              id: agentId.replace(/^agent:/, ''),
-              name: agentData.name || "Unknown Agent",
-              trigger: agentData.trigger || "on-demand",
-              schedule: agentData.schedule || "As needed",
-              status: agentData.status || "standby",
-              lastRun: agentData.lastRun || record.data.last_run || "Never",
-              purpose: agentData.purpose || agentData.description || "No description available",
-              integrations: agentData.integrations || agentData.platforms || ["OpenClaw"],
-            };
-            
-            agentMap.set(agent.id, agent);
-          }
-        } else if (record.record_key?.startsWith("agent:")) {
-          // This is a single agent record (e.g., "agent:mission_control")
-          const agentId = record.record_key.replace(/^agent:/, '');
-          const agentData = record.data;
-          
-          if (agentData) {
-            const agent: Agent = {
-              id: agentId,
-              name: agentData.agent_name || agentData.name || agentId,
-              trigger: agentData.trigger || "cron",
-              schedule: agentData.schedule || agentData.cron_schedule || "Daily",
-              status: agentData.status || "active",
-              lastRun: agentData.last_run 
-                ? formatTimeAgo(agentData.last_run) 
-                : agentData.lastRun || "Just now",
-              purpose: agentData.purpose || agentData.description || "Monitor system health and auto-restart",
-              integrations: agentData.integrations || agentData.platforms || ["Supabase"],
-            };
-            
-            agentMap.set(agent.id, agent);
-          }
+      // Format 1: Check for agentList in the data object (array format)
+      if (record.data?.agentList?.agents && Array.isArray(record.data.agentList.agents)) {
+        for (const agentData of record.data.agentList.agents) {
+          const agent: Agent = {
+            id: agentData.id || `agent:${agentData.name?.toLowerCase().replace(/\s+/g, '_')}`,
+            name: agentData.name || "Unknown Agent",
+            trigger: agentData.trigger || "on-demand",
+            schedule: agentData.schedule || "As needed",
+            status: agentData.status || "standby",
+            lastRun: agentData.lastRun || "Never",
+            purpose: agentData.purpose || "No description available",
+            integrations: agentData.integrations || ["OpenClaw"],
+          };
+          agentMap.set(agent.id, agent);
         }
+      }
+      
+      // Format 2: Check for individual agent status records
+      // Example: { record_type: "agent_status", record_key: "agent:mission_control", data: { agent_name: "Mission Control", ... } }
+      if (record.record_type === "agent_status" && record.record_key?.startsWith("agent:")) {
+        const agentId = record.record_key.replace("agent:", "");
+        const data = record.data || {};
+        
+        // Convert ISO timestamp to relative time format
+        let lastRunText = "Never";
+        if (data.last_run) {
+          lastRunText = formatTimeAgo(data.last_run);
+        }
+        
+        const agent: Agent = {
+          id: agentId,
+          name: data.agent_name || agentId.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase()),
+          trigger: data.trigger || "on-demand",
+          schedule: data.schedule || "As needed",
+          status: data.status || "standby",
+          lastRun: lastRunText,
+          purpose: data.purpose || "No description available",
+          integrations: data.integrations || ["OpenClaw"],
+        };
+        agentMap.set(agent.id, agent);
       }
     }
     

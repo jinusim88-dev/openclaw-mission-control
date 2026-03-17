@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import {
   projects,
-  agents,
+  agents as staticAgents,
   recentActivity,
   cronHealth,
   stats,
@@ -38,9 +38,11 @@ import {
   OpenClawStatusResponse,
   CronListResponse,
   ActivityResponse,
+  AgentsResponse,
   fetchOpenClawStatus,
   fetchCronList,
   fetchActivity,
+  fetchAgents,
 } from "./data/data";
 
 // ============================================
@@ -67,6 +69,7 @@ function useRealTimeData() {
   const [openClawStatus, setOpenClawStatus] = useState<OpenClawStatusResponse | null>(null);
   const [cronData, setCronData] = useState<CronListResponse | null>(null);
   const [activityData, setActivityData] = useState<ActivityResponse | null>(null);
+  const [agentsData, setAgentsData] = useState<AgentsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [lastUpdatedFromSupabase, setLastUpdatedFromSupabase] = useState<string | null>(null);
@@ -76,14 +79,16 @@ function useRealTimeData() {
     setLoading(true);
     setSupabaseError(null);
     try {
-      const [status, cron, activity] = await Promise.all([
+      const [status, cron, activity, agents] = await Promise.all([
         fetchOpenClawStatus(),
         fetchCronList(),
         fetchActivity(),
+        fetchAgents(),
       ]);
       setOpenClawStatus(status);
       setCronData(cron);
       setActivityData(activity);
+      setAgentsData(agents);
       setLastRefresh(new Date());
       
       // Capture Supabase timestamp if available
@@ -92,7 +97,8 @@ function useRealTimeData() {
       }
       
       // Check if using fallback data
-      if (status?.error || cron?.error || activity?.error) {
+      const hasError = status?.error || cron?.error || activity?.error || agents?.error;
+      if (hasError) {
         setSupabaseError("Using fallback data (Supabase unavailable)");
       }
     } catch (error) {
@@ -114,6 +120,7 @@ function useRealTimeData() {
     openClawStatus,
     cronData,
     activityData,
+    agentsData,
     loading,
     lastRefresh,
     lastUpdatedFromSupabase,
@@ -956,10 +963,12 @@ function ProgressBar({ progress, color }: { progress: number; color: string }) {
 // ============================================
 function StatsCarousel({ 
   loading, 
-  onRefresh 
+  onRefresh,
+  agentsData,
 }: { 
   loading: boolean;
   onRefresh: () => void;
+  agentsData: AgentsResponse | null;
 }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const carouselRef = useRef<HTMLDivElement>(null);
@@ -968,6 +977,9 @@ function StatsCarousel({
   const tasksDoneNum = parseInt(tasksDoneParts[0]) || 0;
   const totalTasksNum = parseInt(tasksDoneParts[1]) || 0;
   const taskProgress = totalTasksNum > 0 ? Math.round((tasksDoneNum / totalTasksNum) * 100) : 0;
+  
+  // Use dynamic agent count if available
+  const agentCount = agentsData?.total ?? stats.agents;
 
   const statCards = [
     {
@@ -980,11 +992,11 @@ function StatsCarousel({
     },
     {
       label: "Agents",
-      value: stats.agents,
+      value: agentCount,
       icon: Cpu,
       color: "#8888ff",
       variant: "blue" as const,
-      subtext: "Running agents",
+      subtext: agentsData ? `${agentsData.active} active` : "Running agents",
     },
     {
       label: "Tasks Done",
@@ -1296,6 +1308,48 @@ function ActivityView({
 }
 
 // ============================================
+// AGENTS VIEW
+// ============================================
+function AgentsView({ 
+  agentsData,
+  loading 
+}: { 
+  agentsData: AgentsResponse | null;
+  loading: boolean;
+}) {
+  const agents = agentsData?.agents || staticAgents;
+  
+  return (
+    <div>
+      {agentsData?.error && (
+        <div style={{ 
+          padding: "12px 16px", 
+          background: "rgba(255, 170, 0, 0.1)", 
+          border: "1px solid rgba(255, 170, 0, 0.3)",
+          borderRadius: "8px",
+          marginBottom: "16px",
+          color: "#ffaa00",
+          fontSize: "13px"
+        }}>
+          ⚠️ Using cached agent data (Supabase unavailable)
+        </div>
+      )}
+      
+      {loading && !agentsData ? (
+        <div style={{ textAlign: "center", padding: "40px", color: "#666" }}>
+          <Loader2 size={32} className="animate-spin" style={{ marginBottom: "16px" }} />
+          <div>Loading agents...</div>
+        </div>
+      ) : (
+        agents.map((agent) => (
+          <AgentCard key={agent.id} agent={agent} />
+        ))
+      )}
+    </div>
+  );
+}
+
+// ============================================
 // DESKTOP TABS
 // ============================================
 function DesktopTabs({ activeTab, setActiveTab }: { activeTab: TabType; setActiveTab: (t: TabType) => void }) {
@@ -1356,6 +1410,7 @@ export default function MissionControl() {
     openClawStatus, 
     cronData, 
     activityData, 
+    agentsData,
     loading, 
     lastRefresh, 
     lastUpdatedFromSupabase,
@@ -1428,7 +1483,7 @@ export default function MissionControl() {
       </header>
 
       {/* Stats Carousel */}
-      <StatsCarousel loading={loading} onRefresh={refreshData} />
+      <StatsCarousel loading={loading} onRefresh={refreshData} agentsData={agentsData} />
 
       {/* Desktop Tabs */}
       <DesktopTabs activeTab={activeTab} setActiveTab={setActiveTab} />
@@ -1444,11 +1499,7 @@ export default function MissionControl() {
         )}
 
         {activeTab === "agents" && (
-          <div>
-            {agents.map((agent) => (
-              <AgentCard key={agent.id} agent={agent} />
-            ))}
-          </div>
+          <AgentsView agentsData={agentsData} loading={loading} />
         )}
 
         {activeTab === "activity" && (
