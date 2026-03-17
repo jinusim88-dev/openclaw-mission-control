@@ -1,8 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "export",
-  distDir: "dist",
+  // Removed output: "export" to enable serverless API routes
+  // distDir removed - using default .next for Vercel compatibility
 };
 
 export default nextConfig;

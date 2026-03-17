@@ -1,0 +1,11 @@
+var R=require("../../chunks/ssr/[turbopack]_runtime.js")("server/app/_global-error/page.js")
+R.c("server/chunks/ssr/[root-of-the-server]__fa404819._.js")
+R.c("server/chunks/ssr/openclaw-mission-control_14e4f00d._.js")
+R.c("server/chunks/ssr/edfa3_next_dist_dd631467._.js")
+R.c("server/chunks/ssr/[root-of-the-server]__b3dcac0f._.js")
+R.c("server/chunks/ssr/edfa3_e74b7a1b._.js")
+R.c("server/chunks/ssr/edfa3_next_dist_296d0cc2._.js")
+R.c("server/chunks/ssr/openclaw-mission-control_app_de313786._.js")
+R.c("server/chunks/ssr/55be2__next-internal_server_app__global-error_page_actions_c100f8a5.js")
+R.m(87399)
+module.exports=R.m(87399).exports

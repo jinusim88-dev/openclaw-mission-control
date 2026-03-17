@@ -23,7 +23,9 @@ import {
   Loader2,
   Wifi,
   WifiOff,
+  Terminal,
 } from "lucide-react";
+import { LiveActivityTerminal, useTerminalLogs } from "./components/LiveActivityTerminal";
 import {
   projects,
   staticAgents,
@@ -104,7 +106,7 @@ function getFreshnessColor(freshness: DataFreshness): string {
 }
 
 // ============================================
-// REAL-TIME DATA HOOK WITH IMPROVED POLLING
+// REAL-TIME DATA HOOK WITH TERMINAL LOGS
 // ============================================
 function useRealTimeData() {
   const [openClawStatus, setOpenClawStatus] = useState<OpenClawStatusResponse | null>(null);
@@ -117,6 +119,9 @@ function useRealTimeData() {
   const [supabaseError, setSupabaseError] = useState<string | null>(null);
   const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
   const [lastRealtimeUpdate, setLastRealtimeUpdate] = useState<string | null>(null);
+  
+  // Terminal logs
+  const { logs, isPaused, addLog, pause, resume, clear } = useTerminalLogs();
   
   // Polling configuration
   const CRITICAL_POLL_INTERVAL = 10000; // 10 seconds for critical data
@@ -183,17 +188,21 @@ function useRealTimeData() {
     setLastRealtimeUpdate(new Date().toISOString());
     setIsRealtimeConnected(true);
     
+    // Add to terminal logs
+    const logEntry = {
+      id: `${payload.record_key}:${Date.now()}`,
+      timestamp: payload.updated_at || new Date().toISOString(),
+      event_type: payload.data?.event_type || payload.record_type,
+      agent_name: payload.data?.agent_name || payload.data?.cron_name,
+      message: payload.data?.message || `Update: ${payload.record_type}`,
+      severity: payload.data?.severity || "info",
+      metadata: payload.data?.metadata || {},
+    };
+    addLog(logEntry);
+    
     // Refresh data immediately on realtime update
     refreshData(false);
-    
-    // Show toast or indicator for important events
-    if (payload.record_type === "crash_event") {
-      // Could trigger a toast notification here
-      console.warn("[Dashboard] Crash event detected!");
-    } else if (payload.record_type === "cron_results" && payload.data?.error) {
-      console.warn("[Dashboard] Cron job failure detected!");
-    }
-  }, [refreshData]);
+  }, [refreshData, addLog]);
 
   // Setup polling and realtime subscription
   useEffect(() => {
@@ -236,6 +245,12 @@ function useRealTimeData() {
     supabaseError,
     isRealtimeConnected,
     refreshData,
+    // Terminal logs
+    terminalLogs: logs,
+    isTerminalPaused: isPaused,
+    pauseTerminal: pause,
+    resumeTerminal: resume,
+    clearTerminal: clear,
   };
 }
 
@@ -1625,7 +1640,11 @@ export default function MissionControl() {
     lastUpdatedFromSupabase,
     supabaseError,
     isRealtimeConnected,
-    refreshData 
+    refreshData,
+    terminalLogs,
+    isTerminalPaused,
+    pauseTerminal,
+    resumeTerminal,
   } = useRealTimeData();
 
   return (
@@ -1698,6 +1717,18 @@ export default function MissionControl() {
         {activeTab === "activity" && (
           <ActivityView activityData={activityData} cronData={cronData} />
         )}
+
+        {/* Terminal - Live Activity Stream */}
+        <div style={{ marginTop: "32px" }}>
+          <LiveActivityTerminal
+            logs={terminalLogs}
+            maxLines={100}
+            autoScroll={!isTerminalPaused}
+            onPause={pauseTerminal}
+            onResume={resumeTerminal}
+            isPaused={isTerminalPaused}
+          />
+        </div>
       </main>
 
       {/* Bottom Navigation (Mobile) */}
