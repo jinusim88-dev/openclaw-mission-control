@@ -64,3 +64,32 @@ export async function fetchMissionControlData(): Promise<MissionControlData | nu
     return null;
   }
 }
+
+export interface MissionControlRecord {
+  id: number;
+  record_type: string;
+  record_key: string;
+  data: any;
+  updated_at: string;
+  created_at: string;
+}
+
+export async function fetchMissionControlHistory(limit = 20): Promise<MissionControlRecord[]> {
+  try {
+    const { data, error } = await supabase
+      .from("mission_control")
+      .select("*")
+      .order("updated_at", { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error("Supabase fetch history error:", error);
+      return [];
+    }
+
+    return (data as MissionControlRecord[]) || [];
+  } catch (error) {
+    console.error("Failed to fetch mission control history:", error);
+    return [];
+  }
+}

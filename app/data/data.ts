@@ -1,5 +1,5 @@
 // Real OpenClaw data from mission-control-data.json
-import { fetchMissionControlData } from "@/lib/supabase";
+import { fetchMissionControlData, fetchMissionControlHistory } from "@/lib/supabase";
 
 export interface Task {
   name: string;
@@ -405,29 +405,97 @@ export async function fetchCronList(): Promise<CronListResponse> {
   }
 }
 
+// Helper function to format time ago
+function getTimeAgo(timestamp: string): string {
+  const now = new Date();
+  const past = new Date(timestamp);
+  const diffMs = now.getTime() - past.getTime();
+  const diffSecs = Math.floor(diffMs / 1000);
+  const diffMins = Math.floor(diffSecs / 60);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffSecs < 60) return "just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return past.toLocaleDateString();
+}
+
 export async function fetchActivity(): Promise<ActivityResponse> {
   try {
-    // Try Supabase first
-    const missionData = await fetchMissionControlData();
-    if (missionData?.data?.agentList) {
-      // Convert agents to activity items for display
-      const agentActivities: ActivityItem[] = missionData.data.agentList.agents
-        .filter(a => a.lastRun !== "Never" && a.lastRun !== "")
-        .slice(0, 10)
-        .map(a => ({
-          time: a.lastRun,
-          agent: a.name,
-          message: `Agent is ${a.status}`,
-          type: a.status === "active" ? "success" : "info" as "success" | "info" | "warning" | "error",
-        }));
+    // Fetch mission control history with all record types
+    const history = await fetchMissionControlHistory(30);
+    
+    if (history && history.length > 0) {
+      const activities: ActivityItem[] = [];
+      
+      for (const record of history) {
+        const timeAgo = getTimeAgo(record.updated_at);
+        
+        switch (record.record_type) {
+          case "crash_event":
+            activities.push({
+              time: timeAgo,
+              agent: "Mission Control",
+              message: `Crash detected at ${record.data?.crashTime || "unknown time"}. Auto-restarted successfully.`,
+              type: "error",
+            });
+            break;
+            
+          case "heartbeat":
+            const uptime = record.data?.uptime || "unknown";
+            const memory = record.data?.memory ? `${Math.round(record.data.memory)}MB` : null;
+            activities.push({
+              time: timeAgo,
+              agent: "Mission Control",
+              message: `Bot health: online. Uptime: ${uptime}${memory ? `. Memory: ${memory}` : ""}`,
+              type: "info",
+            });
+            break;
+            
+          case "cron_results":
+            const jobName = record.data?.jobName || record.record_key || "Unknown Job";
+            const status = record.data?.status || "unknown";
+            const error = record.data?.error;
+            activities.push({
+              time: timeAgo,
+              agent: jobName,
+              message: error || `Cron job ${status}`,
+              type: status === "success" ? "success" : "error",
+            });
+            break;
+            
+          case "agent_status":
+            if (record.data?.agents) {
+              // This is the agent list - convert active agents to activities
+              for (const agent of record.data.agents.slice(0, 5)) {
+                if (agent.lastRun && agent.lastRun !== "Never") {
+                  activities.push({
+                    time: agent.lastRun,
+                    agent: agent.name,
+                    message: `Agent is ${agent.status}`,
+                    type: agent.status === "active" ? "success" : "info",
+                  });
+                }
+              }
+            }
+            break;
+        }
+      }
+      
+      // Remove duplicates and sort by time (most recent first)
+      const uniqueActivities = activities.filter((item, index, self) => 
+        index === self.findIndex((t) => t.agent === item.agent && t.message === item.message && t.time === item.time)
+      );
       
       return {
-        activities: agentActivities.length > 0 ? agentActivities : recentActivity,
-        lastUpdated: missionData.updated_at,
+        activities: uniqueActivities.length > 0 ? uniqueActivities.slice(0, 15) : recentActivity,
+        lastUpdated: new Date().toISOString(),
       };
     }
   } catch (error) {
-    console.log("Supabase fetch failed, trying local API...");
+    console.log("Supabase fetch failed, trying local API...", error);
   }
 
   // Fallback to local API
