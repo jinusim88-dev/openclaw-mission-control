@@ -406,7 +406,7 @@ export async function fetchCronList(): Promise<CronListResponse> {
 }
 
 // Helper function to format time ago
-function getTimeAgo(timestamp: string): string {
+function formatTimeAgo(timestamp: string): string {
   const now = new Date();
   const past = new Date(timestamp);
   const diffMs = now.getTime() - past.getTime();
@@ -415,11 +415,107 @@ function getTimeAgo(timestamp: string): string {
   const diffHours = Math.floor(diffMins / 60);
   const diffDays = Math.floor(diffHours / 24);
 
-  if (diffSecs < 60) return "just now";
+  if (diffSecs < 60) return "Just now";
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
   return past.toLocaleDateString();
+}
+
+// ============================================
+// FETCH AGENTS FROM SUPABASE
+// ============================================
+
+export interface AgentsResponse {
+  agents: Agent[];
+  total: number;
+  active: number;
+  lastUpdated: string;
+  error?: string;
+}
+
+export async function fetchAgents(): Promise<AgentsResponse> {
+  try {
+    // Fetch agent_status records from Supabase
+    const history = await fetchMissionControlHistory(50);
+    
+    // Create a map to store unique agents by ID
+    const agentMap = new Map<string, Agent>();
+    
+    // First, populate with static agents as fallback
+    for (const agent of agents) {
+      agentMap.set(agent.id, { ...agent });
+    }
+    
+    // Process agent_status records from Supabase
+    for (const record of history) {
+      if (record.record_type === "agent_status") {
+        // Check if this is an agent list record
+        if (record.data?.agents && Array.isArray(record.data.agents)) {
+          // This is a multi-agent record
+          for (const agentData of record.data.agents) {
+            const agentId = agentData.id || agentData.agent_id || `agent:${agentData.name?.toLowerCase().replace(/\s+/g, '_')}`;
+            
+            const agent: Agent = {
+              id: agentId.replace(/^agent:/, ''),
+              name: agentData.name || "Unknown Agent",
+              trigger: agentData.trigger || "on-demand",
+              schedule: agentData.schedule || "As needed",
+              status: agentData.status || "standby",
+              lastRun: agentData.lastRun || record.data.last_run || "Never",
+              purpose: agentData.purpose || agentData.description || "No description available",
+              integrations: agentData.integrations || agentData.platforms || ["OpenClaw"],
+            };
+            
+            agentMap.set(agent.id, agent);
+          }
+        } else if (record.record_key?.startsWith("agent:")) {
+          // This is a single agent record (e.g., "agent:mission_control")
+          const agentId = record.record_key.replace(/^agent:/, '');
+          const agentData = record.data;
+          
+          if (agentData) {
+            const agent: Agent = {
+              id: agentId,
+              name: agentData.agent_name || agentData.name || agentId,
+              trigger: agentData.trigger || "cron",
+              schedule: agentData.schedule || agentData.cron_schedule || "Daily",
+              status: agentData.status || "active",
+              lastRun: agentData.last_run 
+                ? formatTimeAgo(agentData.last_run) 
+                : agentData.lastRun || "Just now",
+              purpose: agentData.purpose || agentData.description || "Monitor system health and auto-restart",
+              integrations: agentData.integrations || agentData.platforms || ["Supabase"],
+            };
+            
+            agentMap.set(agent.id, agent);
+          }
+        }
+      }
+    }
+    
+    // Convert map back to array
+    const mergedAgents = Array.from(agentMap.values());
+    const activeCount = mergedAgents.filter(a => a.status === "active").length;
+    
+    return {
+      agents: mergedAgents,
+      total: mergedAgents.length,
+      active: activeCount,
+      lastUpdated: new Date().toISOString(),
+    };
+  } catch (error) {
+    console.error("Failed to fetch agents from Supabase:", error);
+    
+    // Return static agents as fallback
+    return {
+      agents: agents,
+      total: agents.length,
+      active: agents.filter(a => a.status === "active").length,
+      lastUpdated: new Date().toISOString(),
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
 }
 
 export async function fetchActivity(): Promise<ActivityResponse> {
@@ -431,7 +527,7 @@ export async function fetchActivity(): Promise<ActivityResponse> {
       const activities: ActivityItem[] = [];
       
       for (const record of history) {
-        const timeAgo = getTimeAgo(record.updated_at);
+        const timeAgo = formatTimeAgo(record.updated_at);
         
         switch (record.record_type) {
           case "crash_event":
@@ -479,6 +575,16 @@ export async function fetchActivity(): Promise<ActivityResponse> {
                   });
                 }
               }
+            } else if (record.record_key?.startsWith("agent:")) {
+              // Single agent status update
+              const agentName = record.data?.agent_name || record.record_key.replace("agent:", "");
+              const agentStatus = record.data?.status || "unknown";
+              activities.push({
+                time: timeAgo,
+                agent: agentName,
+                message: `Agent status: ${agentStatus}`,
+                type: agentStatus === "active" ? "success" : "info",
+              });
             }
             break;
         }
@@ -545,4 +651,5 @@ export const agentIcons: Record<string, string> = {
   "supabase-query": "🗄️",
   "pdf-converter": "📄",
   "cron-job-runner": "🤖",
+  "mission_control": "🎯",
 };
