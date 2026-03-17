@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Clock,
   CheckCircle2,
@@ -21,10 +21,12 @@ import {
   BarChart3,
   RefreshCw,
   Loader2,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 import {
   projects,
-  agents as staticAgents,
+  staticAgents,
   recentActivity,
   cronHealth,
   stats,
@@ -44,6 +46,7 @@ import {
   fetchActivity,
   fetchAgents,
 } from "./data/data";
+import { createRealtimeSubscription, RealtimeCallback } from "@/lib/supabase";
 
 // ============================================
 // TIME AGO HELPER
@@ -57,13 +60,51 @@ function getTimeAgo(timestamp: string): string {
   const diffDays = Math.floor(diffHours / 24);
 
   if (diffMins < 1) return "Just now";
-  if (diffMins < 60) return `${diffMins} min ago`;
-  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`;
-  return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return `${diffDays}d ago`;
 }
 
 // ============================================
-// REAL-TIME DATA HOOK
+// DATA FRESHNESS HELPERS
+// ============================================
+type DataFreshness = "fresh" | "stale" | "very-stale" | "unknown";
+
+function getDataFreshness(timestamp: string | null): { 
+  freshness: DataFreshness; 
+  ageSeconds: number;
+  label: string;
+} {
+  if (!timestamp) {
+    return { freshness: "unknown", ageSeconds: Infinity, label: "Unknown" };
+  }
+  
+  const now = new Date();
+  const date = new Date(timestamp);
+  const diffMs = now.getTime() - date.getTime();
+  const diffSecs = Math.floor(diffMs / 1000);
+  
+  if (diffSecs < 30) {
+    return { freshness: "fresh", ageSeconds: diffSecs, label: `${diffSecs}s ago` };
+  } else if (diffSecs < 300) { // 5 minutes
+    const mins = Math.floor(diffSecs / 60);
+    return { freshness: "stale", ageSeconds: diffSecs, label: `${mins}m ago` };
+  } else {
+    return { freshness: "very-stale", ageSeconds: diffSecs, label: getTimeAgo(timestamp) };
+  }
+}
+
+function getFreshnessColor(freshness: DataFreshness): string {
+  switch (freshness) {
+    case "fresh": return "#00ff88";
+    case "stale": return "#ffaa00";
+    case "very-stale": return "#ff4466";
+    default: return "#666666";
+  }
+}
+
+// ============================================
+// REAL-TIME DATA HOOK WITH IMPROVED POLLING
 // ============================================
 function useRealTimeData() {
   const [openClawStatus, setOpenClawStatus] = useState<OpenClawStatusResponse | null>(null);
@@ -74,10 +115,19 @@ function useRealTimeData() {
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [lastUpdatedFromSupabase, setLastUpdatedFromSupabase] = useState<string | null>(null);
   const [supabaseError, setSupabaseError] = useState<string | null>(null);
+  const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
+  const [lastRealtimeUpdate, setLastRealtimeUpdate] = useState<string | null>(null);
+  
+  // Polling configuration
+  const CRITICAL_POLL_INTERVAL = 10000; // 10 seconds for critical data
+  const NORMAL_POLL_INTERVAL = 30000; // 30 seconds for less critical data
+  const backoffRef = useRef(0);
+  const consecutiveErrorsRef = useRef(0);
 
-  const refreshData = async () => {
-    setLoading(true);
+  const refreshData = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     setSupabaseError(null);
+    
     try {
       const [status, cron, activity, agents] = await Promise.all([
         fetchOpenClawStatus(),
@@ -85,6 +135,7 @@ function useRealTimeData() {
         fetchActivity(),
         fetchAgents(),
       ]);
+      
       setOpenClawStatus(status);
       setCronData(cron);
       setActivityData(activity);
@@ -92,9 +143,20 @@ function useRealTimeData() {
       setLastRefresh(new Date());
       
       // Capture Supabase timestamp if available
-      if (activity?.lastUpdated) {
-        setLastUpdatedFromSupabase(activity.lastUpdated);
+      const timestamps = [
+        activity?.lastUpdated,
+        agents?.lastUpdated,
+      ].filter(Boolean);
+      
+      if (timestamps.length > 0) {
+        // Use the most recent timestamp
+        const mostRecent = timestamps.sort().reverse()[0];
+        setLastUpdatedFromSupabase(mostRecent);
       }
+      
+      // Reset error backoff on success
+      consecutiveErrorsRef.current = 0;
+      backoffRef.current = 0;
       
       // Check if using fallback data
       const hasError = status?.error || cron?.error || activity?.error || agents?.error;
@@ -104,17 +166,63 @@ function useRealTimeData() {
     } catch (error) {
       console.error("Failed to refresh data:", error);
       setSupabaseError("Failed to fetch data");
+      consecutiveErrorsRef.current++;
+      // Exponential backoff: 10s, 20s, 40s, max 60s
+      backoffRef.current = Math.min(
+        Math.pow(2, consecutiveErrorsRef.current) * 10000,
+        60000
+      );
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    refreshData();
-    // Auto-refresh every 60 seconds
-    const interval = setInterval(refreshData, 60000);
-    return () => clearInterval(interval);
   }, []);
+
+  // Handle realtime updates
+  const handleRealtimeUpdate: RealtimeCallback = useCallback((payload) => {
+    console.log("[Dashboard] Realtime update received:", payload);
+    setLastRealtimeUpdate(new Date().toISOString());
+    setIsRealtimeConnected(true);
+    
+    // Refresh data immediately on realtime update
+    refreshData(false);
+    
+    // Show toast or indicator for important events
+    if (payload.record_type === "crash_event") {
+      // Could trigger a toast notification here
+      console.warn("[Dashboard] Crash event detected!");
+    } else if (payload.record_type === "cron_results" && payload.data?.error) {
+      console.warn("[Dashboard] Cron job failure detected!");
+    }
+  }, [refreshData]);
+
+  // Setup polling and realtime subscription
+  useEffect(() => {
+    // Initial fetch
+    refreshData();
+    
+    // Setup realtime subscription
+    const unsubscribe = createRealtimeSubscription(handleRealtimeUpdate);
+    
+    // Setup polling with dynamic interval based on errors
+    const poll = () => {
+      const interval = backoffRef.current > 0 
+        ? backoffRef.current 
+        : CRITICAL_POLL_INTERVAL;
+      
+      refreshData(false);
+      
+      // Schedule next poll
+      setTimeout(poll, interval);
+    };
+    
+    // Start polling after initial delay
+    const pollTimeout = setTimeout(poll, CRITICAL_POLL_INTERVAL);
+    
+    return () => {
+      clearTimeout(pollTimeout);
+      unsubscribe();
+    };
+  }, [refreshData, handleRealtimeUpdate]);
 
   return {
     openClawStatus,
@@ -124,7 +232,9 @@ function useRealTimeData() {
     loading,
     lastRefresh,
     lastUpdatedFromSupabase,
+    lastRealtimeUpdate,
     supabaseError,
+    isRealtimeConnected,
     refreshData,
   };
 }
@@ -188,6 +298,51 @@ const mobileFirstStyles = `
     padding: 8px 14px;
     border-radius: 10px;
     border: 1px solid rgba(136, 136, 255, 0.2);
+  }
+
+  /* Live Indicator */
+  .mc-live-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .mc-live-pulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  .mc-live-pulse.fresh {
+    background: var(--accent-green);
+    box-shadow: 0 0 8px var(--accent-green);
+  }
+
+  .mc-live-pulse.stale {
+    background: var(--accent-orange);
+    box-shadow: 0 0 8px var(--accent-orange);
+    animation: pulse-slow 2s ease-in-out infinite;
+  }
+
+  .mc-live-pulse.very-stale {
+    background: var(--accent-red);
+    box-shadow: 0 0 8px var(--accent-red);
+    animation: none;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.1); }
+  }
+
+  @keyframes pulse-slow {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
   }
 
   /* Stats Carousel */
@@ -959,6 +1114,61 @@ function ProgressBar({ progress, color }: { progress: number; color: string }) {
 }
 
 // ============================================
+// LIVE INDICATOR COMPONENT
+// ============================================
+function LiveIndicator({ 
+  lastUpdate,
+  isRealtimeConnected,
+  supabaseError,
+}: { 
+  lastUpdate: string | null;
+  isRealtimeConnected: boolean;
+  supabaseError: string | null;
+}) {
+  const [freshness, setFreshness] = useState(getDataFreshness(lastUpdate));
+  
+  // Update freshness every second
+  useEffect(() => {
+    setFreshness(getDataFreshness(lastUpdate));
+    const interval = setInterval(() => {
+      setFreshness(getDataFreshness(lastUpdate));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [lastUpdate]);
+  
+  const color = getFreshnessColor(freshness.freshness);
+  
+  return (
+    <div style={{ 
+      fontSize: "12px", 
+      color: "#666", 
+      marginTop: "4px", 
+      display: "flex", 
+      alignItems: "center", 
+      gap: "8px" 
+    }}>
+      {supabaseError ? (
+        <>
+          <WifiOff size={12} color="#ffaa00" />
+          <span style={{ color: "#ffaa00" }}>Offline mode</span>
+          <span style={{ color: "#444" }}>|</span>
+          <span>{freshness.label}</span>
+        </>
+      ) : (
+        <>
+          <div className="mc-live-indicator">
+            <div className={`mc-live-pulse ${freshness.freshness}`} />
+            {isRealtimeConnected ? "Live" : "Polling"}
+          </div>
+          <span style={{ color: "#444" }}>|</span>
+          <span style={{ color }}>{freshness.label}</span>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ============================================
 // STAT CAROUSEL
 // ============================================
 function StatsCarousel({ 
@@ -1412,17 +1622,11 @@ export default function MissionControl() {
     activityData, 
     agentsData,
     loading, 
-    lastRefresh, 
     lastUpdatedFromSupabase,
     supabaseError,
+    isRealtimeConnected,
     refreshData 
   } = useRealTimeData();
-
-  const lastUpdatedText = lastUpdatedFromSupabase 
-    ? `Last updated: ${getTimeAgo(lastUpdatedFromSupabase)}`
-    : lastRefresh 
-      ? `Last updated: ${getTimeAgo(lastRefresh.toISOString())}`
-      : "Loading...";
 
   return (
     <div className="mc-container">
@@ -1432,22 +1636,11 @@ export default function MissionControl() {
       <header className="mc-header">
         <div>
           <h1 className="mc-header-title">Mission Control</h1>
-          <div style={{ fontSize: "12px", color: "#666", marginTop: "4px", display: "flex", alignItems: "center", gap: "8px" }}>
-            {loading ? (
-              <>
-                <Loader2 size={12} className="animate-spin" />
-                {lastUpdatedText}
-              </>
-            ) : (
-              <>
-                <span style={{ color: supabaseError ? "#ffaa00" : "#00ff88" }}>●</span>
-                {lastUpdatedText}
-                {supabaseError && (
-                  <span style={{ color: "#ffaa00", marginLeft: "8px" }}>({supabaseError})</span>
-                )}
-              </>
-            )}
-          </div>
+          <LiveIndicator 
+            lastUpdate={lastUpdatedFromSupabase}
+            isRealtimeConnected={isRealtimeConnected}
+            supabaseError={supabaseError}
+          />
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           {openClawStatus && (
