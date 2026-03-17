@@ -1,4 +1,5 @@
 // Real OpenClaw data from mission-control-data.json
+import { fetchMissionControlData } from "@/lib/supabase";
 
 export interface Task {
   name: string;
@@ -304,6 +305,145 @@ export const cronHealth: CronHealth[] = [
   { id: "e6640474", name: "People Linker Scanner", schedule: "10:30 AM", nextRun: "in 10h", lastRun: "14h ago", status: "ok" },
   { id: "7881ea9e", name: "Mainline Billing Daily", schedule: "11:00 PM", nextRun: "in 23h", lastRun: "1h ago", status: "ok" },
 ];
+
+// ============================================
+// API RESPONSE TYPES
+// ============================================
+
+export interface OpenClawStatusResponse {
+  active: boolean;
+  version?: string;
+  sessions?: number;
+  uptime?: string;
+  error?: string;
+}
+
+export interface CronJobStatus {
+  id: string;
+  name: string;
+  schedule: string;
+  lastRun: string;
+  nextRun: string;
+  status: "ok" | "failing" | "pending" | "unknown";
+}
+
+export interface CronListResponse {
+  jobs: CronJobStatus[];
+  total: number;
+  healthy: number;
+  failing: number;
+  error?: string;
+}
+
+export interface ActivityResponse {
+  activities: ActivityItem[];
+  lastUpdated: string;
+  error?: string;
+}
+
+// ============================================
+// API FETCH FUNCTIONS - Supabase first, fallback to static
+// ============================================
+
+export async function fetchOpenClawStatus(): Promise<OpenClawStatusResponse> {
+  try {
+    // Try Supabase first
+    const missionData = await fetchMissionControlData();
+    if (missionData?.data?.openclawStatus) {
+      return {
+        active: missionData.data.openclawStatus.active,
+        version: missionData.data.openclawStatus.version,
+        sessions: missionData.data.openclawStatus.sessions,
+        uptime: missionData.data.openclawStatus.uptime,
+      };
+    }
+  } catch (error) {
+    console.log("Supabase fetch failed, trying local API...");
+  }
+
+  // Fallback to local API
+  try {
+    const response = await fetch("/api/status");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } catch (error) {
+    console.error("Failed to fetch OpenClaw status:", error);
+    return { active: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+export async function fetchCronList(): Promise<CronListResponse> {
+  try {
+    // Try Supabase first
+    const missionData = await fetchMissionControlData();
+    if (missionData?.data?.cronList) {
+      return {
+        jobs: missionData.data.cronList.jobs,
+        total: missionData.data.cronList.total,
+        healthy: missionData.data.cronList.healthy,
+        failing: missionData.data.cronList.failing,
+      };
+    }
+  } catch (error) {
+    console.log("Supabase fetch failed, trying local API...");
+  }
+
+  // Fallback to local API
+  try {
+    const response = await fetch("/api/cron");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } catch (error) {
+    console.error("Failed to fetch cron list:", error);
+    return {
+      jobs: cronHealth.map(c => ({ ...c, status: c.status as "ok" | "failing" | "pending" | "unknown" })),
+      total: cronHealth.length,
+      healthy: cronHealth.filter(c => c.status === "ok").length,
+      failing: cronHealth.filter(c => c.status === "failing").length,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+export async function fetchActivity(): Promise<ActivityResponse> {
+  try {
+    // Try Supabase first
+    const missionData = await fetchMissionControlData();
+    if (missionData?.data?.agentList) {
+      // Convert agents to activity items for display
+      const agentActivities: ActivityItem[] = missionData.data.agentList.agents
+        .filter(a => a.lastRun !== "Never" && a.lastRun !== "")
+        .slice(0, 10)
+        .map(a => ({
+          time: a.lastRun,
+          agent: a.name,
+          message: `Agent is ${a.status}`,
+          type: a.status === "active" ? "success" : "info" as "success" | "info" | "warning" | "error",
+        }));
+      
+      return {
+        activities: agentActivities.length > 0 ? agentActivities : recentActivity,
+        lastUpdated: missionData.updated_at,
+      };
+    }
+  } catch (error) {
+    console.log("Supabase fetch failed, trying local API...");
+  }
+
+  // Fallback to local API
+  try {
+    const response = await fetch("/api/activity");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } catch (error) {
+    console.error("Failed to fetch activity:", error);
+    return {
+      activities: recentActivity,
+      lastUpdated: new Date().toISOString(),
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
 
 // Colors for projects
 export const projectColors: Record<string, string> = {

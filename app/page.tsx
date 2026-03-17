@@ -19,6 +19,8 @@ import {
   Zap,
   Layers,
   BarChart3,
+  RefreshCw,
+  Loader2,
 } from "lucide-react";
 import {
   projects,
@@ -33,7 +35,92 @@ import {
   Agent,
   ActivityItem,
   CronHealth,
+  OpenClawStatusResponse,
+  CronListResponse,
+  ActivityResponse,
+  fetchOpenClawStatus,
+  fetchCronList,
+  fetchActivity,
 } from "./data/data";
+
+// ============================================
+// TIME AGO HELPER
+// ============================================
+function getTimeAgo(timestamp: string): string {
+  const now = new Date();
+  const date = new Date(timestamp);
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffMins < 1) return "Just now";
+  if (diffMins < 60) return `${diffMins} min ago`;
+  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`;
+  return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
+}
+
+// ============================================
+// REAL-TIME DATA HOOK
+// ============================================
+function useRealTimeData() {
+  const [openClawStatus, setOpenClawStatus] = useState<OpenClawStatusResponse | null>(null);
+  const [cronData, setCronData] = useState<CronListResponse | null>(null);
+  const [activityData, setActivityData] = useState<ActivityResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [lastUpdatedFromSupabase, setLastUpdatedFromSupabase] = useState<string | null>(null);
+  const [supabaseError, setSupabaseError] = useState<string | null>(null);
+
+  const refreshData = async () => {
+    setLoading(true);
+    setSupabaseError(null);
+    try {
+      const [status, cron, activity] = await Promise.all([
+        fetchOpenClawStatus(),
+        fetchCronList(),
+        fetchActivity(),
+      ]);
+      setOpenClawStatus(status);
+      setCronData(cron);
+      setActivityData(activity);
+      setLastRefresh(new Date());
+      
+      // Capture Supabase timestamp if available
+      if (activity?.lastUpdated) {
+        setLastUpdatedFromSupabase(activity.lastUpdated);
+      }
+      
+      // Check if using fallback data
+      if (status?.error || cron?.error || activity?.error) {
+        setSupabaseError("Using fallback data (Supabase unavailable)");
+      }
+    } catch (error) {
+      console.error("Failed to refresh data:", error);
+      setSupabaseError("Failed to fetch data");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshData();
+    // Auto-refresh every 60 seconds
+    const interval = setInterval(refreshData, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return {
+    openClawStatus,
+    cronData,
+    activityData,
+    loading,
+    lastRefresh,
+    lastUpdatedFromSupabase,
+    supabaseError,
+    refreshData,
+  };
+}
 
 // ============================================
 // TYPES
@@ -696,6 +783,42 @@ const mobileFirstStyles = `
     font-weight: 500;
   }
 
+  /* Refresh button */
+  .mc-refresh-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 12px auto 0;
+    padding: 6px 14px;
+    background: rgba(136, 136, 255, 0.1);
+    border: 1px solid rgba(136, 136, 255, 0.2);
+    border-radius: 20px;
+    color: var(--accent-blue);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .mc-refresh-btn:hover {
+    background: rgba(136, 136, 255, 0.2);
+    border-color: rgba(136, 136, 255, 0.4);
+  }
+
+  .mc-refresh-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .mc-refresh-btn .animate-spin {
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
   /* Desktop Overrides */
   @media (min-width: 768px) {
     .mc-container {
@@ -831,7 +954,13 @@ function ProgressBar({ progress, color }: { progress: number; color: string }) {
 // ============================================
 // STAT CAROUSEL
 // ============================================
-function StatsCarousel() {
+function StatsCarousel({ 
+  loading, 
+  onRefresh 
+}: { 
+  loading: boolean;
+  onRefresh: () => void;
+}) {
   const [activeIndex, setActiveIndex] = useState(0);
   const carouselRef = useRef<HTMLDivElement>(null);
 
@@ -901,7 +1030,13 @@ function StatsCarousel() {
                 <stat.icon size={22} color={stat.color} />
               </div>
             </div>
-            <div className="mc-stat-value">{stat.value}</div>
+            <div className="mc-stat-value">
+              {loading ? (
+                <Loader2 size={32} className="animate-spin" style={{ color: stat.color }} />
+              ) : (
+                stat.value
+              )}
+            </div>
           </div>
         ))}
       </div>
@@ -913,6 +1048,14 @@ function StatsCarousel() {
           />
         ))}
       </div>
+      <button 
+        onClick={onRefresh}
+        className="mc-refresh-btn"
+        disabled={loading}
+      >
+        <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+        {loading ? "Loading..." : "Refresh"}
+      </button>
     </div>
   );
 }
@@ -1092,11 +1235,20 @@ function AgentCard({ agent }: { agent: Agent }) {
 // ============================================
 // ACTIVITY LIST
 // ============================================
-function ActivityView() {
+function ActivityView({ 
+  activityData,
+  cronData 
+}: { 
+  activityData: ActivityResponse | null;
+  cronData: CronListResponse | null;
+}) {
+  const activities = activityData?.activities || recentActivity;
+  const cronJobs = cronData?.jobs || cronHealth;
+
   return (
     <div>
       <div className="mc-activity-list">
-        {recentActivity.map((activity, idx) => (
+        {activities.map((activity, idx) => (
           <div key={idx} className="mc-activity-item">
             <div className={`mc-activity-dot ${activity.type}`} />
             <div className="mc-activity-content">
@@ -1115,8 +1267,9 @@ function ActivityView() {
         <h4 className="mc-section-title" style={{ marginTop: 0 }}>
           <CalendarClock size={14} style={{ display: "inline", marginRight: "6px" }} />
           Cron Health
+          {cronData?.error && <span style={{ color: "#ff4466", marginLeft: "8px", fontSize: "11px" }}>(using fallback)</span>}
         </h4>
-        {cronHealth.map((cron) => (
+        {cronJobs.map((cron) => (
           <div key={cron.id} className="mc-cron-card">
             {cron.status === "ok" ? (
               <CheckCircle2 size={20} color="#00ff88" />
@@ -1199,6 +1352,22 @@ function BottomNav({ activeTab, setActiveTab }: { activeTab: TabType; setActiveT
 // ============================================
 export default function MissionControl() {
   const [activeTab, setActiveTab] = useState<TabType>("projects");
+  const { 
+    openClawStatus, 
+    cronData, 
+    activityData, 
+    loading, 
+    lastRefresh, 
+    lastUpdatedFromSupabase,
+    supabaseError,
+    refreshData 
+  } = useRealTimeData();
+
+  const lastUpdatedText = lastUpdatedFromSupabase 
+    ? `Last updated: ${getTimeAgo(lastUpdatedFromSupabase)}`
+    : lastRefresh 
+      ? `Last updated: ${getTimeAgo(lastRefresh.toISOString())}`
+      : "Loading...";
 
   return (
     <div className="mc-container">
@@ -1206,12 +1375,60 @@ export default function MissionControl() {
 
       {/* Header */}
       <header className="mc-header">
-        <h1 className="mc-header-title">Mission Control</h1>
-        <LiveClock />
+        <div>
+          <h1 className="mc-header-title">Mission Control</h1>
+          <div style={{ fontSize: "12px", color: "#666", marginTop: "4px", display: "flex", alignItems: "center", gap: "8px" }}>
+            {loading ? (
+              <>
+                <Loader2 size={12} className="animate-spin" />
+                {lastUpdatedText}
+              </>
+            ) : (
+              <>
+                <span style={{ color: supabaseError ? "#ffaa00" : "#00ff88" }}>●</span>
+                {lastUpdatedText}
+                {supabaseError && (
+                  <span style={{ color: "#ffaa00", marginLeft: "8px" }}>({supabaseError})</span>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          {openClawStatus && (
+            <div 
+              className="mc-status-indicator"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "6px 12px",
+                borderRadius: "8px",
+                background: openClawStatus.active ? "rgba(0, 255, 136, 0.1)" : "rgba(255, 68, 102, 0.1)",
+                border: `1px solid ${openClawStatus.active ? "rgba(0, 255, 136, 0.3)" : "rgba(255, 68, 102, 0.3)"}`,
+                color: openClawStatus.active ? "#00ff88" : "#ff4466",
+                fontSize: "12px",
+                fontWeight: 600,
+              }}
+            >
+              <span 
+                style={{
+                  width: "8px",
+                  height: "8px",
+                  borderRadius: "50%",
+                  background: openClawStatus.active ? "#00ff88" : "#ff4466",
+                  boxShadow: `0 0 8px ${openClawStatus.active ? "#00ff88" : "#ff4466"}`,
+                }} 
+              />
+              {openClawStatus.active ? "Online" : "Offline"}
+            </div>
+          )}
+          <LiveClock />
+        </div>
       </header>
 
       {/* Stats Carousel */}
-      <StatsCarousel />
+      <StatsCarousel loading={loading} onRefresh={refreshData} />
 
       {/* Desktop Tabs */}
       <DesktopTabs activeTab={activeTab} setActiveTab={setActiveTab} />
@@ -1234,7 +1451,9 @@ export default function MissionControl() {
           </div>
         )}
 
-        {activeTab === "activity" && <ActivityView />}
+        {activeTab === "activity" && (
+          <ActivityView activityData={activityData} cronData={cronData} />
+        )}
       </main>
 
       {/* Bottom Navigation (Mobile) */}
